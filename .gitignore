@@ -1,0 +1,39 @@
+#过滤数据库文件、sln解决方案文件、配置文件
+*.mdb
+*.ldb
+*.suo
+.vs/
+#过滤文件夹Debug,Release,obj
+Debug/
+Release/
+obj/
+Bin/
+[b,B]in/
+.nuget
+# Compiled Object files
+*.slo
+*.lo
+*.o
+
+# Compiled Dynamic libraries
+*.so
+*.dylib
+
+# Compiled Static libraries
+*.lai
+*.la
+*.a
+*.cache
+**/bin/Debug/
+**/obj/
+**/[b,B]in/
+TrumpchiBDM.csproj.user
+/TrumpchiBDM/UpLoad/Team
+/TrumpchiBDM/UpLoad/Test
+/.idea
+/packages
+/TrumpchiBDM/Common/Exports/templates/~$指标数据填报模板.xlsx
+/TrumpchiBDM/ExcelFiles
+/*.user
+/publish
+/publish.zip
