@@ -11,6 +11,7 @@ namespace ML.ImagesClassification
         private static readonly string AssetsPath = Path.Combine(Environment.CurrentDirectory, "assets");
         private static readonly string ImagesFolder = Path.Combine(AssetsPath, "fish-images");
         private static readonly string TestImagesFolder = Path.Combine(AssetsPath, "test-images");
+        private static readonly string ModelPath = Path.Combine(AssetsPath, "model.zip");
 
         private static readonly string InceptionTensorFlowModel =
             Path.Combine(AssetsPath, "inception", "tensorflow_inception_graph.pb");
@@ -19,14 +20,20 @@ namespace ML.ImagesClassification
         {
             // 训练模型
             var mlContext = new MLContext();
-            var model = GenerateModel(mlContext);
+            var model = GenerateModel(mlContext, true);
+
             // 图片分类测试
             ClassifyImage(mlContext, model);
         }
 
-        // Build and train model
-        public static ITransformer GenerateModel(MLContext mlContext)
+        public static ITransformer GenerateModel(MLContext mlContext, bool useCache)
         {
+            if (useCache && File.Exists(ModelPath))
+            {
+                var m = mlContext.Model.Load(ModelPath, out _);
+                return m;
+            }
+
             IEstimator<ITransformer> pipeline = mlContext.Transforms.LoadImages("input",
                     ImagesFolder, nameof(ImageData.ImagePath))
                 .Append(mlContext.Transforms.ResizeImages("input",
@@ -35,7 +42,7 @@ namespace ML.ImagesClassification
                     interleavePixelColors: InceptionSettings.CHANNELS_LAST, offsetImage: InceptionSettings.MEAN))
                 .Append(mlContext.Model
                     .LoadTensorFlowModel(InceptionTensorFlowModel)
-                    .ScoreTensorFlowModel(new[] {"softmax2_pre_activation"}, new[] {"input"}, true))
+                    .ScoreTensorFlowModel(new[] { "softmax2_pre_activation" }, new[] { "input" }, true))
                 .Append(mlContext.Transforms.Conversion.MapValueToKey("LabelKey", "Label"))
                 .Append(mlContext.MulticlassClassification.Trainers
                     .LbfgsMaximumEntropy("LabelKey", "softmax2_pre_activation"))
@@ -56,6 +63,9 @@ namespace ML.ImagesClassification
 
             var trainingData = mlContext.Data.LoadFromEnumerable(images);
             var model = pipeline.Fit(trainingData);
+            
+            if (useCache)
+                mlContext.Model.Save(model, trainingData.Schema, ModelPath);
             return model;
         }
 
