@@ -6,8 +6,8 @@ namespace ML.ImagesClassification
     {
         private static void Main()
         {
-            // Console.WriteLine("============ V1 ============");
-            // ImagesClassificationV1.Execute();
+            Console.WriteLine("============ V1 ============");
+            ImagesClassificationV1.Execute();
 
             Console.WriteLine();
             

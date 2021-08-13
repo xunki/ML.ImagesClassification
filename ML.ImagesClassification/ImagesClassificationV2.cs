@@ -1,8 +1,11 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Net;
 using Microsoft.ML;
 using Microsoft.ML.Data;
+using Microsoft.ML.Vision;
 
 namespace ML.ImagesClassification
 {
@@ -13,9 +16,6 @@ namespace ML.ImagesClassification
         private static readonly string TestImagesFolder = Path.Combine(AssetsPath, "test-images");
         private static readonly string ModelPath = Path.Combine(AssetsPath, "model_v2.zip");
 
-        private static readonly string InceptionTensorFlowModel =
-            Path.Combine(AssetsPath, "inception", "tensorflow_inception_graph.pb");
-        
         public static void Execute()
         {
             // 训练模型
@@ -34,80 +34,86 @@ namespace ML.ImagesClassification
                 return m;
             }
 
-            IEstimator<ITransformer> pipeline = mlContext.Transforms.LoadImages("input",
-                    ImagesFolder, nameof(ImageData.ImagePath))
-                .Append(mlContext.Transforms.ResizeImages("input",
-                    InceptionSettings.IMAGE_WIDTH, InceptionSettings.IMAGE_HEIGHT, "input"))
-                .Append(mlContext.Transforms.ExtractPixels("input",
-                    interleavePixelColors: InceptionSettings.CHANNELS_LAST, offsetImage: InceptionSettings.MEAN))
-                .Append(mlContext.Model
-                    .LoadTensorFlowModel(InceptionTensorFlowModel)
-                    .ScoreTensorFlowModel(new[] { "softmax2_pre_activation" }, new[] { "input" }, true))
-                .Append(mlContext.Transforms.Conversion.MapValueToKey("LabelKey", "Label"))
-                .Append(mlContext.MulticlassClassification.Trainers
-                    .LbfgsMaximumEntropy("LabelKey", "softmax2_pre_activation"))
-                .Append(mlContext.Transforms.Conversion.MapKeyToValue("PredictedLabelValue", "PredictedLabel"))
-                .AppendCacheCheckpoint(mlContext);
-
             var images = Directory.GetFiles(ImagesFolder, "*", SearchOption.AllDirectories)
                 .Select(file =>
                 {
-                    var path = file.Substring(ImagesFolder.Length).TrimStart('\\');
-                    var label = path.Split('\\')[0];
-                    return new ImageData
+                    var label = file[ImagesFolder.Length..].TrimStart('\\').Split('\\')[0];
+                    return new ModelInput
                     {
-                        ImagePath = path,
+                        Image = File.ReadAllBytes(file),
                         Label = label
                     };
                 }).ToList();
 
-            var trainingData = mlContext.Data.LoadFromEnumerable(images);
-            var model = pipeline.Fit(trainingData);
+            var imageData = mlContext.Data.LoadFromEnumerable(images);
+            var shuffledData = mlContext.Data.ShuffleRows(imageData);
 
+            var preprocessingPipeline = mlContext.Transforms.Conversion
+                .MapValueToKey(inputColumnName: "Label", outputColumnName: "LabelAsKey");
+
+            var preProcessedData = preprocessingPipeline.Fit(shuffledData).Transform(shuffledData);
+
+            var trainSplit = mlContext.Data.TrainTestSplit(preProcessedData, 0.3);
+            var trainSet = trainSplit.TrainSet;
+            var validationSet = trainSplit.TestSet;
+
+            var classifierOptions = new ImageClassificationTrainer.Options
+            {
+                FeatureColumnName = "Image",
+                LabelColumnName = "LabelAsKey",
+                ValidationSet = validationSet,
+                Arch = ImageClassificationTrainer.Architecture.ResnetV2101,
+                MetricsCallback = Console.WriteLine,
+                TestOnTrainSet = false,
+                ReuseTrainSetBottleneckCachedValues = true,
+                ReuseValidationSetBottleneckCachedValues = true
+            };
+
+            var trainingPipeline = mlContext.MulticlassClassification.Trainers
+                .ImageClassification(classifierOptions)
+                .Append(mlContext.Transforms.Conversion.MapKeyToValue("PredictedLabel"));
+
+            var model = trainingPipeline.Fit(trainSet);
             if (useCache)
-                mlContext.Model.Save(model, trainingData.Schema, ModelPath);
+                mlContext.Model.Save(model, imageData.Schema, ModelPath);
             return model;
         }
 
         private static void ClassifyImage(MLContext mlContext, ITransformer model)
         {
-            var files = Directory.GetFiles(TestImagesFolder);
-            foreach (var file in files)
-            {
-                var imageData = new ImageData
+            var imageData = mlContext.Data.LoadFromEnumerable(Directory.GetFiles(TestImagesFolder).Select(file =>
+                new ModelInput
                 {
-                    ImagePath = file
-                };
-                var predictor = mlContext.Model.CreatePredictionEngine<ImageData, ImagePrediction>(model);
-                var prediction = predictor.Predict(imageData);
+                    Image = File.ReadAllBytes(file),
+                    Label = Path.GetFileName(file)
+                }));
 
+            var preprocessingPipeline = mlContext.Transforms.Conversion
+                .MapValueToKey(inputColumnName: "Label", outputColumnName: "LabelAsKey");
+
+            var preProcessedData = preprocessingPipeline.Fit(imageData).Transform(imageData);
+            var inputs = mlContext.Data.CreateEnumerable<ModelInput>(preProcessedData, true);
+
+            var predictor = mlContext.Model.CreatePredictionEngine<ModelInput, ModelOutput>(model);
+            foreach (var prediction in inputs.Select(input => predictor.Predict(input)))
+            {
                 Console.WriteLine(
-                    $"Image: {Path.GetFileName(imageData.ImagePath)} predicted as: {prediction.PredictedLabelValue} with score: {prediction.Score.Max()} ");
+                    $"Image: {prediction.Label} | Predicted Value: {prediction.PredictedLabel} with score: {prediction.Score.Max()}");
             }
         }
 
-        private struct InceptionSettings
+        public class ModelInput
         {
-            public const int IMAGE_HEIGHT = 224;
-            public const int IMAGE_WIDTH = 224;
-            public const float MEAN = 117;
-            public const float SCALE = 1;
-            public const bool CHANNELS_LAST = true;
-        }
-
-        public class ImageData
-        {
-            [LoadColumn(0)]
-            public string ImagePath { get; set; }
-
-            [LoadColumn(1)]
             public string Label { get; set; }
+            public byte[] Image { get; set; }
+            public uint LabelAsKey { get; set; }
         }
 
-        public class ImagePrediction : ImageData
+        public class ModelOutput
         {
+            public string Label { get; set; }
+            public string PredictedLabel { get; set; }
             public float[] Score { get; set; }
-            public string PredictedLabelValue { get; set; }
         }
     }
 }
